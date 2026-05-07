@@ -50,12 +50,26 @@ class TDAGraph:
         Fractional extension on each side of each base interval.
         E.g. 0.4 → each patch is 40 % wider on each side than a base cell.
     tau : float or ``"auto"``, default ``"auto"``
-        Relative-ratio cutoff threshold for the canonical clustering.
+        Controls where the dendrogram is cut.
 
-        * **float > 1** – cut at the *first* merge step where r_i > tau.
-        * **"auto"**    – cut at the step with the *maximum* r_i (largest
-          structural gap; for well-separated clusters this is the natural
-          inter-cluster boundary).
+        * **"auto"**    – cut at the step with the *maximum* relative jump
+          r_i = h[i+1]/h[i], skipping early steps where h[i] < 5 % of the
+          max merge distance (those ratios are inflated by near-zero denominators).
+        * **float > 1** – first-jump criterion: cut at the *first* step where
+          r_i > tau.
+
+    linkage_method : str, default ``"single"``
+        How cluster-to-cluster distances are computed at each merge step.
+
+        * Standard scipy methods: ``"single"``, ``"complete"``,
+          ``"average"``, ``"ward"``.
+        * ``"hausdorff"`` – custom greedy linkage using the Hausdorff
+          distance between clusters:
+          ``d_H(A,B) = max(max_{a∈A} min_{b∈B} d(a,b),
+          max_{b∈B} min_{a∈A} d(a,b))``.
+          Stricter than single-linkage, less aggressive than
+          complete-linkage; reflects the worst-case nearest-neighbour
+          proximity between the two point clouds.
 
     Attributes (set by :meth:`fit`)
     ---------------------------------
@@ -79,13 +93,11 @@ class TDAGraph:
         overlap_frac: float = 0.4,
         tau: float | str = "auto",
         linkage_method: str = "single",
-        cross_cluster_edges: bool = False,
     ) -> None:
         self.n_intervals         = n_intervals
         self.overlap_frac        = overlap_frac
-        self.tau                 = tau
-        self.linkage_method      = linkage_method
-        self.cross_cluster_edges = cross_cluster_edges
+        self.tau            = tau
+        self.linkage_method = linkage_method
 
     # ── Fit ───────────────────────────────────────────────────────────────────
 
@@ -126,30 +138,34 @@ class TDAGraph:
     # ── Private step methods ──────────────────────────────────────────────────
 
     def _fit_clustering(self, tau: float | str) -> None:
-        """Step 1 – single-linkage dendrogram + cut.
+        """Step 1 – dendrogram + cut.
 
-        Three cut modes controlled by ``tau``:
+        Two cut modes controlled by ``tau``:
 
-        * ``"auto"``       – largest absolute gap  h[i+1] - h[i]  (default).
-        * ``float < 0``    – **absolute cutoff**: cut at distance ``|tau|``
-                             directly, no heuristic.  E.g. ``tau=-1.5`` cuts
-                             the dendrogram at distance 1.5.
-        * ``float > 1``    – **first-jump** relative-ratio: cut at the first
-                             step where  h[i+1]/h[i] > tau.
+        * ``"auto"``    – cut at the step with the largest relative jump
+                          r_i = h[i+1] / h[i], ignoring initial steps where
+                          h[i] < 5 % of the max merge distance (those early
+                          ratios are inflated by a near-zero denominator).
+        * ``float > 1`` – **first-jump**: cut at the first step where
+                          h[i+1]/h[i] > tau.
         """
-        self.Z_         = linkage(self.X_, method=self.linkage_method, metric="euclidean")
+        if self.linkage_method == "hausdorff":
+            self.Z_ = self._hausdorff_linkage()
+        else:
+            self.Z_ = linkage(self.X_, method=self.linkage_method, metric="euclidean")
         self.heights_   = self.Z_[:, 2]                        # ascending
         self.rel_jumps_ = self.heights_[1:] / self.heights_[:-1]
 
         if tau == "auto":
-            abs_gaps            = np.diff(self.heights_)
-            i_max               = int(np.argmax(abs_gaps))
-            self.canonical_cut_ = float(self.heights_[i_max])
-            self.canonical_tau_ = float(self.rel_jumps_[i_max]) if i_max < len(self.rel_jumps_) else 1.0
-        elif isinstance(tau, (int, float)) and float(tau) < 0:
-            # absolute distance cutoff
-            self.canonical_cut_ = float(-tau)
-            self.canonical_tau_ = float("nan")
+            rj    = self.rel_jumps_
+            h     = self.heights_
+            # Skip early steps whose denominator h[i] is still near zero —
+            # those produce artificially large ratios that obscure the real gap.
+            min_h = float(h[-1]) * 0.05
+            valid = np.where(h[:-1] >= min_h)[0]   # h[:-1] are denominators of rj
+            i_max = int(valid[np.argmax(rj[valid])]) if len(valid) else int(np.argmax(rj))
+            self.canonical_cut_ = float(h[i_max])
+            self.canonical_tau_ = float(rj[i_max])
         else:
             self.canonical_tau_ = float(tau)
             self.canonical_cut_ = self._cutoff_distance(self.canonical_tau_)
@@ -157,6 +173,71 @@ class TDAGraph:
         self.labels_ = fcluster(
             self.Z_, t=self.canonical_cut_, criterion="distance"
         )
+
+    def _hausdorff_linkage(self) -> np.ndarray:
+        """
+        Build a scipy-compatible linkage matrix using Hausdorff distance.
+
+        Greedy O(n³) algorithm: at each step merge the pair of active
+        clusters (A, B) that minimises
+
+            d_H(A,B) = max( max_{a∈A} min_{b∈B} d(a,b),
+                            max_{b∈B} min_{a∈A} d(a,b) )
+
+        The full pairwise Euclidean distance matrix D is precomputed once
+        and reused via index subsets, so no point coordinates need to be
+        recalculated during the merge loop.
+
+        Returns
+        -------
+        Z : (n-1, 4) ndarray
+            Scipy linkage matrix columns: [id_a, id_b, distance, count].
+        """
+        from scipy.spatial.distance import cdist
+
+        X  = self.X_
+        n  = len(X)
+        D  = cdist(X, X, metric="euclidean")
+
+        # clusters[id] = list of original point indices
+        clusters = {i: [i] for i in range(n)}
+        active   = list(range(n))
+
+        Z       = np.zeros((n - 1, 4))
+        next_id = n
+
+        for step in range(n - 1):
+            best_h    = np.inf
+            best_pair = (active[0], active[1])
+
+            for ai in range(len(active)):
+                ca = active[ai]
+                pa = clusters[ca]
+                for bi in range(ai + 1, len(active)):
+                    cb  = active[bi]
+                    pb  = clusters[cb]
+                    sub = D[np.ix_(pa, pb)]
+                    # directed Hausdorff: max over each side of min to the other
+                    h = max(sub.min(axis=1).max(), sub.min(axis=0).max())
+                    if h < best_h:
+                        best_h    = h
+                        best_pair = (ca, cb)
+
+            ca, cb   = best_pair
+            new_id   = next_id
+            next_id += 1
+            merged   = clusters[ca] + clusters[cb]
+
+            Z[step] = [ca, cb, best_h, len(merged)]
+
+            clusters[new_id] = merged
+            active.remove(ca)
+            active.remove(cb)
+            active.append(new_id)
+            del clusters[ca]
+            del clusters[cb]
+
+        return Z
 
     def _fit_covering(self) -> None:
         """Step 2 – dispatch to 1-D lens cover or 2-D grid cover."""
@@ -221,43 +302,29 @@ class TDAGraph:
         self.membership_ = membership
 
     def _fit_graph(self) -> None:
-        """Step 3 – build edge set from cluster labels and cover membership.
+        """Step 3 – build the ε-neighbourhood graph filtered by the cover.
 
-        Same-cluster edges: added whenever two points share a cover patch and
-        belong to the same cluster (standard TDA-graph rule).
-
-        Cross-cluster proximity edges (only when ``cross_cluster_edges=True``):
-        added for pairs in the same patch whose Euclidean distance is at most
-        ``canonical_cut_``, even if they belong to different clusters.  For
-        single-linkage this adds no new edges (same-cluster ↔ within-cut);
-        for complete / average / Ward linkage it bridges near-boundary pairs
-        that the hard cluster partition would otherwise disconnect.
+        For each cover patch, consider all point pairs (i, j) contained in it.
+        Add edge (i, j) iff their Euclidean distance is at most ε = canonical_cut_
+        (the merge distance at the largest relative jump of the dendrogram).
+        Pairs that do not share any patch are discarded regardless of distance.
         """
-        labels     = self.labels_
-        membership = self.membership_
+        from scipy.spatial.distance import cdist
 
-        # Pre-compute pairwise distances only when needed
-        if self.cross_cluster_edges:
-            from scipy.spatial.distance import cdist
-            D   = cdist(self.X_, self.X_, metric="euclidean")
-            cut = self.canonical_cut_
+        eps = self.canonical_cut_
+        D   = cdist(self.X_, self.X_, metric="euclidean")
 
-        edges:       set[tuple[int, int]] = set()
-        cross_edges: set[tuple[int, int]] = set()
-
-        for members in membership:
+        edges: set[tuple[int, int]] = set()
+        for members in self.membership_:
             if len(members) < 2:
                 continue
             for a in range(len(members)):
                 for b in range(a + 1, len(members)):
                     i, j = int(members[a]), int(members[b])
-                    if labels[i] == labels[j]:
+                    if D[i, j] <= eps:
                         edges.add((min(i, j), max(i, j)))
-                    elif self.cross_cluster_edges and D[i, j] <= cut:
-                        cross_edges.add((min(i, j), max(i, j)))
 
-        self.edges_       = edges
-        self.cross_edges_ = cross_edges
+        self.edges_ = edges
 
     # ── Derived properties ────────────────────────────────────────────────────
 
@@ -268,13 +335,8 @@ class TDAGraph:
 
     @property
     def n_edges_(self) -> int:
-        """Number of same-cluster undirected edges."""
+        """Number of undirected edges in the TDA graph."""
         return len(self.edges_)
-
-    @property
-    def n_cross_edges_(self) -> int:
-        """Number of cross-cluster proximity edges (requires cross_cluster_edges=True)."""
-        return len(getattr(self, "cross_edges_", set()))
 
     @property
     def n_clusters_(self) -> int:
@@ -429,9 +491,8 @@ class TDAGraph:
             print(f"  Cover      : {self.n_intervals}x{self.n_intervals} grid, "
                   f"overlap={self.overlap_frac:.0%}  "
                   f"({n_nonempty}/{self.n_patches_} patches non-empty)")
-        n_cx   = self.n_cross_edges_
-        cx_str = f", {n_cx} cross-cluster proximity edge(s)" if n_cx else ""
-        print(f"  Graph      : {self.n_nodes_} nodes, {self.n_edges_} edges{cx_str}")
+        print(f"  Graph      : {self.n_nodes_} nodes, {self.n_edges_} edges  "
+              f"(ε={self.canonical_cut_:.4f})")
 
     # ── Visualisation ─────────────────────────────────────────────────────────
 
@@ -756,16 +817,6 @@ class TDAGraph:
             )
             ax.add_collection(lc)
 
-        # Cross-cluster proximity edges (same style as regular edges)
-        cross_edges = getattr(self, "cross_edges_", set())
-        if cross_edges:
-            cross_segs = [(self.X_[i], self.X_[j]) for i, j in cross_edges]
-            lc_cross = LineCollection(
-                cross_segs, linewidths=0.5, colors="#888888",
-                alpha=0.40, zorder=2,
-            )
-            ax.add_collection(lc_cross)
-
         pt_colors = self._cluster_colors(self.labels_, cmap)
         ax.scatter(self.X_[:, 0], self.X_[:, 1], c=pt_colors, s=32,
                    edgecolors="white", linewidths=0.5, zorder=3, alpha=0.95)
@@ -773,12 +824,11 @@ class TDAGraph:
         handles = self._legend_handles(cmap)
         ax.legend(handles=handles, fontsize=9, loc="upper right")
 
-        n_cx      = len(cross_edges)
-        cx_info   = f"  |  +{n_cx} cross-cluster proximity edges" if n_cx else ""
         ax.set_title(
             "Step 3 – TDA Proximity Graph\n"
-            "(edge iff same cluster & same cover patch)  |  "
-            f"{self.n_nodes_} nodes, {self.n_edges_} edges{cx_info}  |  "
+            r"(edge iff $d(i,j) \leq \varepsilon$ & same cover patch)  |  "
+            f"{self.n_nodes_} nodes, {self.n_edges_} edges  |  "
+            f"ε={self.canonical_cut_:.4f}  |  "
             f"{self.n_clusters_} cluster(s)  |  "
             f"{self.n_intervals}x{self.n_intervals} cover, "
             f"overlap={self.overlap_frac:.0%}",
@@ -851,7 +901,14 @@ class TDAGraph:
         cluster_color = {c: mpl_to_hex(cmap((c - 1) / denom)) for c in u}
 
         dot = graphviz.Graph(engine=engine)
-        dot.attr(bgcolor="#f7f7f7", pad="0.3", outputorder="edgesfirst")
+        title = (
+            f"TDA ε-neighbourhood graph  |  "
+            f"ε = {self.canonical_cut_:.4f}  |  "
+            f"{self.n_nodes_} nodes, {self.n_edges_} edges  |  "
+            f"{self.linkage_method}-linkage, {self.n_clusters_} cluster(s)"
+        )
+        dot.attr(bgcolor="#f7f7f7", pad="0.3", outputorder="edgesfirst",
+                 label=title, labelloc="t", fontsize="11", fontname="Helvetica")
         if engine != "neato":
             dot.attr(overlap="prism", splines="true")
         dot.attr("node", shape="circle", style="filled",
@@ -873,9 +930,8 @@ class TDAGraph:
                 attrs["pos"] = f"{px:.4f},{py:.4f}!"   # ! pins the node
             dot.node(str(i), **attrs)
 
-        # ── Edges (same-cluster + cross-cluster) ──────────────────────────
-        all_edges = self.edges_ | getattr(self, "cross_edges_", set())
-        for i, j in all_edges:
+        # ── Edges ─────────────────────────────────────────────────────────
+        for i, j in self.edges_:
             dot.edge(str(i), str(j))
 
         # ── Render ────────────────────────────────────────────────────────
@@ -887,6 +943,95 @@ class TDAGraph:
             print(f"Saved: {root}.{fmt}")
 
         return dot
+
+    def plot_rel_jumps(
+        self,
+        figsize: tuple[float, float] = (10, 4),
+        save_path: str | None = None,
+    ):
+        """
+        Plot the relative jumps r_i = h[i+1] / h[i] along the dendrogram.
+
+        Each bar is one consecutive merge-distance ratio. A tall bar marks a
+        structural gap — a natural cluster boundary. The canonical cut is
+        highlighted with a vertical line and an annotation.
+
+        Returns
+        -------
+        fig, (ax_ratio, ax_height) – ratio bar chart + merge-distance line
+        """
+        self._check_fitted()
+        h  = self.heights_
+        rj = self.rel_jumps_          # length n-2
+        xs = np.arange(len(rj))       # step indices 0 … n-3
+
+        # Step where the canonical cut falls: find the heights_ entry closest
+        # to canonical_cut_ (exact match when cut was set by auto/first-jump).
+        i_cut = int(np.argmin(np.abs(h - self.canonical_cut_)))
+
+        # For first-jump tau, also mark where rj first exceeds canonical_tau_
+        # (only meaningful when tau was given as a float > 1, not "auto" or abs).
+        try:
+            tau_val = float(self.canonical_tau_)
+            is_nan  = np.isnan(tau_val)
+        except (TypeError, ValueError):
+            is_nan = True
+        if not is_nan and tau_val > 1.0:
+            fj_hits = np.where(rj > tau_val)[0]
+            i_fj    = int(fj_hits[0]) if len(fj_hits) else None
+        else:
+            i_fj = None
+
+        fig, (ax_r, ax_h) = plt.subplots(
+            2, 1, figsize=figsize, sharex=True,
+            gridspec_kw={"height_ratios": [3, 1]},
+        )
+        fig.patch.set_facecolor("#f7f7f7")
+
+        # ── top: relative-jump bar chart ──────────────────────────────────────
+        ax_r.set_facecolor("#fafafa")
+        bar_colors = ["#4878d0"] * len(rj)
+        bar_colors[i_cut] = "#e05c2a"          # highlight the canonical cut step
+        ax_r.bar(xs, rj, color=bar_colors, width=0.8, alpha=0.80, zorder=2)
+        ax_r.axvline(i_cut, color="#e05c2a", linewidth=1.5, linestyle="--", zorder=3,
+                     label=f"canonical cut  (step {i_cut},  r={rj[i_cut]:.3f})")
+        if i_fj is not None and i_fj != i_cut:
+            ax_r.axvline(i_fj, color="#2ca02c", linewidth=1.5, linestyle=":",
+                         zorder=3,
+                         label=fr"first-jump $\tau$={self.canonical_tau_:.3f}  "
+                               f"(step {i_fj},  r={rj[i_fj]:.3f})")
+        ax_r.set_ylabel(r"$r_i = h_{i+1}\,/\,h_i$", fontsize=10)
+        ax_r.set_title(
+            fr"Relative jumps of the {self.linkage_method}-linkage dendrogram"
+            r"  $r_i = h_{i+1}/h_i$"
+            "\n"
+            r"Orange bar = canonical cut.  "
+            r"Blue bars = all other merge steps.",
+            fontsize=11, fontweight="bold",
+        )
+        ax_r.legend(fontsize=9)
+        ax_r.grid(True, axis="y", linewidth=0.3, alpha=0.4)
+        ax_r.set_xlim(-0.5, len(rj) - 0.5)
+
+        # ── bottom: merge-distance line ───────────────────────────────────────
+        ax_h.set_facecolor("#fafafa")
+        ax_h.plot(np.arange(len(h)), h, color="#555555", linewidth=1.2,
+                  marker="o", markersize=3, zorder=2)
+        ax_h.axvline(i_cut, color="#e05c2a", linewidth=1.5, linestyle="--", zorder=3)
+        ax_h.axhline(self.canonical_cut_, color="#e05c2a", linewidth=1.0,
+                     linestyle=":", alpha=0.7,
+                     label=f"cut={self.canonical_cut_:.4f}")
+        ax_h.set_ylabel(r"$h_i$", fontsize=10)
+        ax_h.set_xlabel("Merge step  $i$", fontsize=10)
+        ax_h.legend(fontsize=8)
+        ax_h.grid(True, linewidth=0.3, alpha=0.4)
+
+        fig.tight_layout()
+        if save_path:
+            fig.savefig(save_path, dpi=150, bbox_inches="tight",
+                        facecolor=fig.get_facecolor())
+            print(f"Saved: {save_path}")
+        return fig, (ax_r, ax_h)
 
     def plot_tau_landscape(
         self,
@@ -914,7 +1059,7 @@ class TDAGraph:
                 label=r"first-jump criterion  $r_i = h_{i+1}/h_i > \tau$")
         ax.axhline(
             self.n_clusters_, color="#e05c2a", linewidth=1.5, linestyle="--",
-            label=f"canonical cut (abs-gap) → {self.n_clusters_} cluster(s)"
+            label=f"canonical cut (max rel-jump) → {self.n_clusters_} cluster(s)"
                   f",  cut={self.canonical_cut_:.4f}",
         )
         ax.set_xscale("log")
@@ -924,7 +1069,7 @@ class TDAGraph:
             r"Cluster-count landscape  $r_i = h_{i+1} / h_i$"
             "\n"
             r"Blue step: first-jump criterion.  "
-            r"Red dashed: canonical cut cluster count (abs-gap, independent of $\tau$)",
+            r"Red dashed: canonical cut cluster count (max rel-jump, independent of $\tau$)",
             fontsize=11, fontweight="bold",
         )
         ax.legend(fontsize=9)

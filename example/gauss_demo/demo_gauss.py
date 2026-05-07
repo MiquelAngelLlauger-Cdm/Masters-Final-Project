@@ -25,15 +25,15 @@ linkage, while complete linkage correctly recovers all three Gaussians.
 
 Outputs (saved in this directory)
 ----------------------------------
-  01_raw_data.png          scatter coloured by true Gaussian source
-  02_covering.png          2-D grid cover (single-linkage clusters)
-  03_clustering.png        single-linkage clustering panels
-  04_tda_graph.png         TDA graph with single-linkage clusters
-  05_complete_covering.png 2-D grid cover (complete-linkage clusters)
-  06_complete_clustering.png  complete-linkage clustering panels
-  07_complete_tda_graph.png   TDA graph with complete-linkage clusters
-  08_cross_tda_graph.png      complete-linkage graph + cross-cluster proximity edges
-                              (dashed orange: dist ≤ canonical_cut_ across cluster boundaries)
+  01_raw_data.png             scatter coloured by true Gaussian source
+  02_covering.png             2-D grid cover (hausdorff clusters)
+  03_clustering.png           hausdorff clustering panels
+  04_rel_jumps.png            relative-jump ratios r_i = h[i+1]/h[i] (hausdorff)
+  05_tda_graph.png            TDA ε-graph (hausdorff, ε = max-rel-jump cut)
+  06_complete_covering.png    2-D grid cover (complete-linkage clusters)
+  07_complete_clustering.png  complete-linkage clustering panels
+  08_complete_rel_jumps.png   relative-jump ratios r_i = h[i+1]/h[i] (complete linkage)
+  09_complete_tda_graph.png   TDA ε-graph (complete linkage, ε = max-rel-jump cut)
 """
 
 import sys
@@ -53,7 +53,6 @@ from tda_graph import TDAGraph
 # ── Configuration ───────────────────────────────────────────────────────────
 N_INTERVALS = 4      # 4 x 4 = 16 square patches
 OVERLAP     = 0.40   # 40 % extension on each side
-TAU_ABS     = -1.0   # cut=1.0 gives exactly 60/60/60 (the three blobs)
 SEED        = 7
 
 BLOB_NAMES  = ["Blob A", "Blob B", "Blob C"]
@@ -109,12 +108,12 @@ plt.close(fig1)
 
 # ── Fit TDAGraph ─────────────────────────────────────────────────────────────
 print(f"\nFitting TDAGraph  (n_intervals={N_INTERVALS}x{N_INTERVALS}, "
-      f"overlap={OVERLAP}, tau={TAU_ABS})...")
+      f"overlap={OVERLAP}, tau=auto)...")
 
-tda = TDAGraph(n_intervals=N_INTERVALS, overlap_frac=OVERLAP, tau=TAU_ABS)
+tda = TDAGraph(n_intervals=N_INTERVALS, overlap_frac=OVERLAP, tau="auto", linkage_method='hausdorff')
 tda.fit(X)
 
-print(f"  Canonical cut : {tda.canonical_cut_:.4f}  (absolute)")
+print(f"  Canonical cut : {tda.canonical_cut_:.4f}  (max rel-jump)")
 print(f"  Clusters      : {tda.n_clusters_}")
 print()
 tda.summary()
@@ -128,17 +127,24 @@ plt.close("all")
 # ── Figure 3 – Clustering panels ─────────────────────────────────────────────
 print("Plotting Figure 3 - clustering...")
 _p3 = os.path.join(_HERE, "03_clustering.png")
-# Sweep from fragmented (0.3) through the correct split (1.0) to merged (1.5)
-ABS_CUTS = [0.3, 0.5, 0.7, 1.0, 1.2, 1.5]
+# Sweep from fragmented (0.3) through the correct split to fully merged (~5.0).
+# Upper end is higher because Hausdorff merge distances grow with cluster size.
+ABS_CUTS = [0.3, 0.7, 1.0, 2.0, 2.5, 3.0]
 tda.plot_clustering(abs_cuts=ABS_CUTS, figsize=(14, 9), save_path=_p3)
 plt.close("all")
 
-# ── Figure 4 – TDA graph ──────────────────────────────────────────────────────
-print("Plotting Figure 4 - TDA graph...")
-_p4 = os.path.join(_HERE, "04_tda_graph.png")
-tda.plot_graph_graphviz(save_path=_p4)
+# ── Figure 4 – Relative jumps (single linkage) ───────────────────────────────
+print("Plotting Figure 4 - relative jumps (single linkage)...")
+_p4 = os.path.join(_HERE, "04_rel_jumps.png")
+tda.plot_rel_jumps(figsize=(10, 4), save_path=_p4)
+plt.close("all")
 
-print(f"\n-- Single-linkage outputs saved (01–04) --")
+# ── Figure 5 – TDA graph ──────────────────────────────────────────────────────
+print("Plotting Figure 5 - TDA graph...")
+_p5 = os.path.join(_HERE, "05_tda_graph.png")
+tda.plot_graph_graphviz(save_path=_p5)
+
+print(f"\n-- Single-linkage outputs saved (01–05) --")
 
 # ── Complete-linkage run ──────────────────────────────────────────────────────
 # Complete linkage uses the *maximum* pairwise distance between clusters,
@@ -160,57 +166,31 @@ print(f"  Clusters      : {tda_c.n_clusters_}")
 print()
 tda_c.summary()
 
-# ── Figure 5 – 2-D cover (complete linkage) ───────────────────────────────────
-print("\nPlotting Figure 5 - 2-D covering (complete linkage)...")
-_p5 = os.path.join(_HERE, "05_complete_covering.png")
-tda_c.plot_covering(figsize=(8, 6), save_path=_p5)
+# ── Figure 6 – 2-D cover (complete linkage) ───────────────────────────────────
+print("\nPlotting Figure 6 - 2-D covering (complete linkage)...")
+_p6 = os.path.join(_HERE, "06_complete_covering.png")
+tda_c.plot_covering(figsize=(8, 6), save_path=_p6)
 plt.close("all")
 
-# ── Figure 6 – Clustering panels (complete linkage) ──────────────────────────
-print("Plotting Figure 6 - clustering (complete linkage)...")
-_p6 = os.path.join(_HERE, "06_complete_clustering.png")
+# ── Figure 7 – Clustering panels (complete linkage) ──────────────────────────
+print("Plotting Figure 7 - clustering (complete linkage)...")
+_p7 = os.path.join(_HERE, "07_complete_clustering.png")
 # Sweep covers fragmented (1.5) through correct 3-cluster cut (~3.6) to merged
 COMPLETE_CUTS = [1.5, 2.5, 3.0, 3.6, 4.5, 6.0]
-tda_c.plot_clustering(abs_cuts=COMPLETE_CUTS, figsize=(14, 9), save_path=_p6)
+tda_c.plot_clustering(abs_cuts=COMPLETE_CUTS, figsize=(14, 9), save_path=_p7)
 plt.close("all")
 
-# ── Figure 7 – TDA graph (complete linkage) ───────────────────────────────────
-print("Plotting Figure 7 - TDA graph (complete linkage)...")
-_p7 = os.path.join(_HERE, "07_complete_tda_graph.png")
-tda_c.plot_graph_graphviz(save_path=_p7)
+# ── Figure 8 – Relative jumps (complete linkage) ──────────────────────────────
+print("Plotting Figure 8 - relative jumps (complete linkage)...")
+_p8 = os.path.join(_HERE, "08_complete_rel_jumps.png")
+tda_c.plot_rel_jumps(figsize=(10, 4), save_path=_p8)
+plt.close("all")
 
-print(f"\n-- Complete-linkage outputs saved (05–07) --")
+# ── Figure 9 – TDA graph (complete linkage) ───────────────────────────────────
+print("Plotting Figure 9 - TDA graph (complete linkage)...")
+_p9 = os.path.join(_HERE, "09_complete_tda_graph.png")
+tda_c.plot_graph_graphviz(save_path=_p9)
 
-# ── Cross-cluster proximity edges (complete linkage) ──────────────────────────
-# Re-fit with cross_cluster_edges=True.  The canonical cut is the same as the
-# complete-linkage run above; we now also add edges between points in the same
-# patch whose Euclidean distance is ≤ canonical_cut_, even across cluster
-# boundaries.  Under single linkage this would add nothing (same-cluster ↔
-# within-cut-distance), but under complete linkage some near-boundary pairs
-# from different clusters can still be within the cut distance.
-print("\n" + "=" * 60)
-print("Complete-linkage  +  cross-cluster proximity edges")
-print("=" * 60)
-
-tda_cx = TDAGraph(
-    n_intervals=N_INTERVALS,
-    overlap_frac=OVERLAP,
-    tau="auto",
-    linkage_method="complete",
-    cross_cluster_edges=True,
-)
-tda_cx.fit(X)
-
-print(f"  Canonical cut       : {tda_cx.canonical_cut_:.4f}  (complete linkage)")
-print(f"  Clusters            : {tda_cx.n_clusters_}")
-print(f"  Same-cluster edges  : {tda_cx.n_edges_}")
-print(f"  Cross-cluster edges : {tda_cx.n_cross_edges_}")
-print()
-tda_cx.summary()
-
-# ── Figure 8 – TDA graph with cross-cluster proximity edges ───────────────────
-print("\nPlotting Figure 8 - TDA graph with cross-cluster proximity edges...")
-_p8 = os.path.join(_HERE, "08_cross_tda_graph.png")
-tda_cx.plot_graph_graphviz(save_path=_p8)
+print(f"\n-- Complete-linkage outputs saved (06–09) --")
 
 print(f"\nAll outputs saved to: {_HERE}")
