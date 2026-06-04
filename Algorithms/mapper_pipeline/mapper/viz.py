@@ -71,8 +71,8 @@ def build_sources(G: nx.Graph, df, lens=None, params=None):
         # # shared cover sets beyond 1 (used for emphasis, like the notebook)
         edge_shared.append(len(data.get("shared_sets", [1])) - 1)
 
-    edge_alpha = [0.8 if g == 0 else 0.25 for g in edge_shared]
-    edge_color = ["#363636" if g == 0 else "#aaaaaa" for g in edge_shared]
+    edge_alpha = [0.5 if g == 0 else 0.5 for g in edge_shared]
+    edge_color = ["#aaaaaa" if g == 0 else "#aaaaaa" for g in edge_shared]
 
     edge_source = ColumnDataSource(dict(
         xs=edge_xs, ys=edge_ys, weight=edge_w,
