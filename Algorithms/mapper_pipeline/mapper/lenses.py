@@ -13,12 +13,7 @@ Three families of lens are provided:
 1. **Feature lens** (`feature_lens`) — the data-driven projection used in the
    original notebook (e.g. ``attendance_density_w8``). Just reads a column.
 
-2. **Centrality lens** (`centrality_lens`) — projects each node onto a graph
-   centrality measure (degree / betweenness / closeness / eccentricity /
-   eigenvector / PageRank) computed on the *unpruned* ε-neighbourhood graph.
-   This is a topology-driven lens: hubs vs. peripheral patients.
-
-3. **Density lens** (`density_lens`) — projects each node onto a local-density
+2. **Density lens** (`density_lens`) — projects each node onto a local-density
    estimate in feature space (kNN distance, ε-ball count, or a Gaussian KDE
    surrogate). This is a geometry-driven lens: dense cores vs. sparse outliers.
 
@@ -85,77 +80,6 @@ def feature_lens(df, column: str) -> LensResult:
     return LensResult(values=values, name=column, kind="feature")
 
 
-# --------------------------------------------------------------------------- #
-# 2. Centrality lens (topology-driven)
-# --------------------------------------------------------------------------- #
-_CENTRALITY_FUNCS: dict[str, Callable[[nx.Graph], dict]] = {
-    "degree":      lambda g: dict(g.degree()),
-    "betweenness": lambda g: nx.betweenness_centrality(g, normalized=True),
-    "closeness":   lambda g: nx.closeness_centrality(g),
-    "eigenvector": lambda g: nx.eigenvector_centrality(g, max_iter=1000, tol=1e-6),
-    "pagerank":    lambda g: nx.pagerank(g),
-    "eccentricity": None,  # handled specially (needs per-component handling)
-}
-
-
-def centrality_lens(
-    G: nx.Graph,
-    n_patients: int,
-    measure: str = "degree",
-) -> LensResult:
-    """
-    Project patients onto a graph-centrality measure.
-
-    The centrality is computed on the graph ``G`` you pass in. Typically you
-    pass the *unpruned* ε-neighbourhood graph (proximity only, no cover/tier
-    filtering) so that the lens reflects pure neighbourhood structure — see
-    ``graph.build_epsilon_graph(... edge_rule=None)``.
-
-    Parameters
-    ----------
-    G : networkx.Graph
-        Graph whose nodes are integer patient indices 0..n_patients-1.
-    n_patients : int
-        Total number of patients (to fill isolated / missing nodes with 0).
-    measure : str
-        One of: degree, betweenness, closeness, eigenvector, pagerank,
-        eccentricity.
-
-    Notes
-    -----
-    * ``eccentricity`` is only defined on connected graphs, so it is computed
-      per connected component; nodes in different components get the
-      component-local eccentricity (isolated nodes -> 0).
-    """
-    measure = measure.lower()
-    if measure not in _CENTRALITY_FUNCS:
-        raise ValueError(
-            f"Unknown centrality measure '{measure}'. "
-            f"Choose from {sorted(_CENTRALITY_FUNCS)}."
-        )
-
-    values = np.zeros(n_patients, dtype=float)
-
-    if measure == "eccentricity":
-        for comp in nx.connected_components(G):
-            sub = G.subgraph(comp)
-            if sub.number_of_nodes() == 1:
-                continue  # eccentricity 0 for a singleton
-            ecc = nx.eccentricity(sub)
-            for node, e in ecc.items():
-                values[node] = float(e)
-    else:
-        try:
-            scores = _CENTRALITY_FUNCS[measure](G)
-        except nx.PowerIterationFailedConvergence:
-            # eigenvector centrality can fail to converge on odd graphs
-            scores = nx.eigenvector_centrality_numpy(G)
-        for node, s in scores.items():
-            values[node] = float(s)
-
-    return LensResult(values=values, name="centrality",
-                      kind="centrality", detail=measure)
-
 
 # --------------------------------------------------------------------------- #
 # 3. Density lens (geometry-driven)
@@ -178,12 +102,6 @@ def density_lens(
     D : numpy.ndarray
         Symmetric (n, n) pairwise distance matrix.
     method : str
-        - ``"knn"``      : density ~ 1 / (mean distance to k nearest neighbours).
-                           High value = dense region.
-        - ``"knn_dist"`` : raw mean distance to k nearest neighbours.
-                           High value = sparse / outlier (inverse of "knn").
-        - ``"ball"``     : count of points within ``epsilon`` (needs epsilon).
-                           High value = dense region.
         - ``"kde"``      : Gaussian-kernel density surrogate using ``bandwidth``.
                            High value = dense region.
     k : int
@@ -206,25 +124,7 @@ def density_lens(
     off = D[~np.eye(n, dtype=bool)]
     median_d = float(np.median(off)) if off.size else 1.0
 
-    if method in ("knn", "knn_dist"):
-        kk = max(1, min(k, n - 1))
-        # sort each row, skip the self-distance (column 0 after sort == 0)
-        sorted_d = np.sort(D, axis=1)
-        knn_mean = sorted_d[:, 1:kk + 1].mean(axis=1)  # mean dist to k NN
-        if method == "knn_dist":
-            values = knn_mean
-            detail = f"mean dist to {kk}-NN"
-        else:
-            values = 1.0 / (knn_mean + 1e-12)
-            detail = f"inverse mean dist to {kk}-NN"
-
-    elif method == "ball":
-        eps = epsilon if epsilon is not None else median_d
-        # count neighbours within eps, excluding self
-        values = ((D <= eps).sum(axis=1) - 1).astype(float)
-        detail = f"count within eps={eps:.3f}"
-
-    elif method == "kde":
+    if method == "kde":
         h = bandwidth if bandwidth is not None else median_d
         # Gaussian kernel density surrogate (unnormalised but monotone)
         values = np.exp(-(D ** 2) / (2.0 * h ** 2)).sum(axis=1) - 1.0
@@ -267,16 +167,7 @@ def build_lens(params, df, D, G_proximity: Optional[nx.Graph] = None) -> LensRes
 
     if kind == "feature":
         return feature_lens(df, params.FEATURE_LENS_COL)
-
-    if kind == "centrality":
-        if G_proximity is None:
-            raise ValueError(
-                "Centrality lens requires a proximity graph. Pass "
-                "G_proximity (build it with edge_rule=None)."
-            )
-        return centrality_lens(G_proximity, n_patients=len(df),
-                               measure=params.CENTRALITY_MEASURE)
-
+    
     if kind == "density":
         return density_lens(
             D,

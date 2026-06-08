@@ -163,7 +163,7 @@ def classification_summary(model: GCN, data: Data, mask: torch.Tensor) -> None:
 
 def run(G: nx.Graph, epochs: int = 300, lr: float = 0.01,
         hidden: int = 64, dropout: float = 0.5,
-        patience: int = 40, device: str = "cpu") -> tuple[GCN, Data]:
+        device: str = "cpu") -> tuple[GCN, Data]:
     """Train and evaluate a GCN on G. Returns (model, data)."""
     data   = build_data(G, device=device)
     cw     = _class_weights(data, device)
@@ -172,33 +172,17 @@ def run(G: nx.Graph, epochs: int = 300, lr: float = 0.01,
     opt    = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
 
     n_tr, n_va, n_te = data.train_mask.sum(), data.val_mask.sum(), data.test_mask.sum()
-    print(f"GCN  |  nodes={data.num_nodes}  "
-          f"train={n_tr}  val={n_va}  test={n_te}")
+    print(f"GCN  |  nodes={data.num_nodes}  train={n_tr}  val={n_va}  test={n_te}")
 
-    best_val, stale, best_state = 0.0, 0, None
-    for epoch in range(1, epochs + 1):
-        tr_loss        = train_step(model, data, opt, cw)
-        vl_loss        = val_loss(model, data)
-        val_acc, _     = evaluate(model, data, data.val_mask)
+    for epoch in range(1, epochs + 1, 10):
 
-        if val_acc > best_val:
-            best_val   = val_acc
-            best_state = {k: v.clone() for k, v in model.state_dict().items()}
-            stale      = 0
-        else:
-            stale += 1
-        if epoch % 5 == 0 or epoch == 1:
-            print(f"  epoch {epoch:>3d}  train_loss={tr_loss:.4f}  val_loss={vl_loss:.4f}  val_acc={val_acc:.3f}")
-        if stale >= patience:
-            print(f"  Early stop at epoch {epoch}")
-            break
-
-    if best_state:
-        model.load_state_dict(best_state)
+        tr_loss    = train_step(model, data, opt, cw)
+        vl_loss    = val_loss(model, data)
+        val_acc, _ = evaluate(model, data, data.val_mask)
+        print(f"  epoch {epoch:>3d}  train_loss={tr_loss:.4f}  val_loss={vl_loss:.4f}  val_acc={val_acc:.3f}")
 
     test_acc, _ = evaluate(model, data, data.test_mask)
-    print(f"\nBest val acc : {best_val:.3f}")
-    print(f"Test acc     : {test_acc:.3f}\n")
+    print(f"\nTest acc: {test_acc:.3f}\n")
     classification_summary(model, data, data.test_mask)
     return model, data
 
@@ -209,9 +193,8 @@ def run(G: nx.Graph, epochs: int = 300, lr: float = 0.01,
 
 def cross_validate(G: nx.Graph, k: int = 5, epochs: int = 300, lr: float = 0.01,
                    hidden: int = 64, dropout: float = 0.5,
-                   patience: int = 40, device: str = "cpu",
-                   random_state: int = 42) -> list[dict]:
-    """Stratified k-fold CV. Returns a list of per-fold result dicts."""
+                   device: str = "cpu", random_state: int = 42) -> list[dict]:
+    """Stratified k-fold CV (train/test split only). Returns a list of per-fold result dicts."""
     x, y, edge_index, edge_weight, labels = _build_tensors(G)
 
     skf     = StratifiedKFold(n_splits=k, shuffle=True, random_state=random_state)
@@ -219,56 +202,44 @@ def cross_validate(G: nx.Graph, k: int = 5, epochs: int = 300, lr: float = 0.01,
     results = []
 
     for fold, (tr_idx, te_idx) in enumerate(skf.split(idx, labels), 1):
-        tr_idx, va_idx = train_test_split(tr_idx, test_size=0.20,
-                                          stratify=labels[tr_idx],
-                                          random_state=random_state)
+        n = len(labels)
+        def _m(i):
+            m = torch.zeros(n, dtype=torch.bool); m[i] = True; return m
 
         data = Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_weight)
-        data.train_mask, data.val_mask, data.test_mask = _make_masks(labels, tr_idx, va_idx, te_idx)
+        data.train_mask = _m(tr_idx)
+        data.test_mask  = _m(te_idx)
         data = data.to(device)
 
-        cw    = _class_weights(data, device)
+        cw    = torch.bincount(data.y[data.train_mask], minlength=NUM_CLASSES).float()
+        cw    = (cw.sum() / (NUM_CLASSES * cw.clamp(min=1))).to(device)
         model = GCN(in_channels=x.shape[1], hidden=hidden,
                     out_channels=NUM_CLASSES, dropout=dropout).to(device)
         opt   = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
 
-        print(f"\n── Fold {fold}/{k}  "
-              f"train={data.train_mask.sum()}  val={data.val_mask.sum()}  test={data.test_mask.sum()}")
+        print(f"\n── Fold {fold}/{k}  train={data.train_mask.sum()}  test={data.test_mask.sum()}")
 
-        best_val, stale, best_state = 0.0, 0, None
         for epoch in range(1, epochs + 1):
-            tr_loss    = train_step(model, data, opt, cw)
-            vl_loss_v  = val_loss(model, data)
-            val_acc, _ = evaluate(model, data, data.val_mask)
-
-            if val_acc > best_val:
-                best_val   = val_acc
-                best_state = {key: v.clone() for key, v in model.state_dict().items()}
-                stale      = 0
-            else:
-                stale += 1
-            if epoch % 5 == 0 or epoch == 1:
-                print(f"  epoch {epoch:>3d}  train_loss={tr_loss:.4f}  val_loss={vl_loss_v:.4f}  val_acc={val_acc:.3f}")
-
-            if stale >= patience:
-                print(f"  Early stop at epoch {epoch}")
-                break
-
-        if best_state:
-            model.load_state_dict(best_state)
+            model.train()
+            opt.zero_grad()
+            out  = model(data)
+            loss = F.cross_entropy(out[data.train_mask], data.y[data.train_mask], weight=cw)
+            loss.backward()
+            opt.step()
+            if epoch % 50 == 0 or epoch == 1:
+                print(f"  epoch {epoch:>3d}  train_loss={loss.item():.4f}")
 
         test_acc, _ = evaluate(model, data, data.test_mask)
         print(f"  → test_acc={test_acc:.3f}")
         classification_summary(model, data, data.test_mask)
-        results.append({"fold": fold, "val_acc": best_val, "test_acc": test_acc})
+        results.append({"fold": fold, "test_acc": test_acc})
 
     # ── summary table ──
-    val_accs  = [r["val_acc"]  for r in results]
     test_accs = [r["test_acc"] for r in results]
-    print("\n" + "─" * 42)
-    print(f"{'Fold':>6}  {'Val acc':>8}  {'Test acc':>9}")
+    print("\n" + "─" * 30)
+    print(f"{'Fold':>6}  {'Test acc':>9}")
     for r in results:
-        print(f"  {r['fold']:>4}  {r['val_acc']:>8.3f}  {r['test_acc']:>9.3f}")
-    print(f"  Mean  {np.mean(val_accs):>8.3f}  {np.mean(test_accs):>9.3f}")
-    print(f"   Std  {np.std(val_accs):>8.3f}  {np.std(test_accs):>9.3f}")
+        print(f"  {r['fold']:>4}  {r['test_acc']:>9.3f}")
+    print(f"  Mean  {np.mean(test_accs):>9.3f}")
+    print(f"   Std  {np.std(test_accs):>9.3f}")
     return results

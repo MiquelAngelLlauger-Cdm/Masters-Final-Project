@@ -1,11 +1,3 @@
-"""
-mapper.data
-===========
-
-Data loading, joining, feature selection and standardisation.
-Mirrors Sections 1 and 3 of the original notebook.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -84,6 +76,9 @@ def describe_dataset(ds: Dataset, params) -> str:
         f"Patients        : {len(df)}",
         f"Feature matrix  : {ds.X.shape}",
         f"Missing values  : {int(np.isnan(ds.X).sum())}",
+        "",
+        f"Features ({len(ds.feat_cols)}):",
+        *[f"  {c}" for c in ds.feat_cols],
         "",
         "Retention tier distribution:",
         df["retention_tier"].value_counts().sort_index().to_string(),

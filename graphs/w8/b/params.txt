@@ -1,0 +1,60 @@
+
+    # --- proximity ---
+    EPSILON=0.65
+    ,
+    METRIC ="cosine",        # euclidean | cosine | manhattan | minkowski
+    MINKOWSKI_P= np.inf,            # only for minkowski
+
+    # --- LENS: pick one of the three ---
+    LENS_KIND="density",        # "feature" | "centrality" | "density"
+    FEATURE_LENS_COL  = "detox_los",   # feature lens: attendance_density_w8 | detox_los 
+    CENTRALITY_MEASURE="betweenness",             # centrality lens
+
+    DENSITY_METHOD    ="kde",                     # density lens
+    DENSITY_K         =10,
+
+    # --- COVER / BINNING (tunable) ---
+    COVER_MODE ="balanced",      # "uniform" (N_INTERVALS+OVERLAP) or "edges" (BIN_EDGES)
+    N_INTERVALS= 100,
+    OVERLAP    =0.5,
+    # For explicit clinical bins instead, use:
+    # COVER_MODE="edges", BIN_EDGES=[0,3,7,14,21], BIN_LABELS=["0-3","3-7","7-14","14+"]
+
+    PIECEWISE_SEGMENTS=[
+        (350, 360, 15),    # dense cover in the first half
+        (12, 40, 5),
+         # sparse cover in the second half
+    ],
+
+
+
+    # --- edge rule for the displayed graph ---
+    EDGE_RULE  ="cover",        # "cover" (share a set) | "gap" | "none"
+    MAX_BIN_GAP=1,
+
+    # --- layout & colour ---
+    LAYOUT  ="spring", 
+    SPRING_K = 1,              # spring | spectral | pca
+    COLOR_BY="tier",            # "tier" or "lens"
+)
+
+Features (19):
+  last_opioid_date
+  last_substance_code
+  last_route_code
+  discharge_facility_code
+  detox_los
+  education_years
+  occupation_category
+  has_drivers_licence
+  has_automobile
+  days_paid_employment_30d
+  days_any_employment_30d
+  income_employment_30d
+  income_unemployment_30d
+  income_welfare_30d
+  income_illegal_30d
+  n_dependants
+  had_relapse_by_w8
+  engagement_onset_w8
+  attendance_density_w8

@@ -1,20 +1,3 @@
-"""
-mapper.config
-=============
-
-All tunable parameters in one place. This is the modular replacement for the
-notebook's "Section 2 — tune here" cell.
-
-Edit a ``MapperParams`` instance (or build one in your driver script/notebook)
-and pass it through the pipeline. Nothing else needs editing to change the
-analysis.
-
-The binning of the lens stays fully tunable here:
-  * For a *uniform Mapper cover* use ``N_INTERVALS`` + ``OVERLAP`` (resolution /
-    gain), which is the standard Mapper parameterisation.
-  * For *explicit / irregular bins* (the notebook's ``BIN_EDGES`` style) set
-    ``COVER_MODE = "edges"`` and provide ``BIN_EDGES`` (+ optional ``BIN_LABELS``).
-"""
 
 from __future__ import annotations
 
@@ -41,20 +24,30 @@ class MapperParams:
     EXCLUDE_COLS: List[str] = field(default_factory=lambda: [
         "PATID", "retention_tier", "retention_tier_label",
         # "last_opioid_date",
-        # "last_substance_label", "last_route_label", "discharge_facility_label",
-        # "detox_admission_day", "detox_discharge_day",
-        # "opi_past_12_months",
-        # "opi_withdrawal", "opi_tolerance", "opi_strong_craving",
-        # "opi_social_problems", "opi_continued_use_despite_problems",
-        # "opi_larger_longer_dose", "opi_cut_back_unsuccess",
-        # "opi_time_spent", "opi_activities_reduced",
-        # "opi_recurrent_obligat_fail", "opi_hazardous_use",
+        "last_substance_label", "last_route_label", "discharge_facility_label",
+        "detox_admission_day", "detox_discharge_day",
+        "opi_past_12_months",
+        "opi_withdrawal", "opi_tolerance", "opi_strong_craving",
+        "opi_social_problems", "opi_continued_use_despite_problems",
+        "opi_larger_longer_dose", "opi_cut_back_unsuccess",
+        "opi_time_spent", "opi_activities_reduced",
+        "opi_recurrent_obligat_fail", "opi_hazardous_use",
+
+        # "last_opioid_date", "last_substance_code",
+        # "last_route_code", "discharge_facility_code",
+        # "detox_los", "education_years", "occupation_category",
+        # "has_drivers_licence", "has_automobile",
+        # "days_paid_employment_30d", "days_any_employment_30d",
+        # "income_employment_30d", "income_unemployment_30d",
+        # "income_welfare_30d", "income_illegal_30d",
+        # "n_dependants",
         # 'attendance_density_w8', "had_relapse_by_w8", "engagement_onset_w8",
-        # 'attendance_density_w12', "had_relapse_by_w12", "engagement_onset_w12"
+        # 'attendance_density_w12', "had_relapse_by_w12", "engagement_onset_w12",
+        # 'attendance_density_w24', "had_relapse_by_w24", "engagement_onset_w24",
     ])
     # Prefixes / suffixes to drop (SOW, DSM composites, merge artifacts).
-    # EXCLUDE_PREFIXES: List[str] = field(default_factory=lambda: ["sow_", "dsm_"])
-    EXCLUDE_PREFIXES: list[str] = field(default_factory=list)
+    EXCLUDE_PREFIXES: List[str] = field(default_factory=lambda: ["sow_", "dsm_"])
+    # EXCLUDE_PREFIXES: list[str] = field(default_factory=list)
     EXCLUDE_SUFFIXES: List[str] = field(default_factory=lambda: ["_baseline_x",
                                                                  "_baseline_y"])
     STANDARDISE: bool = True   # StandardScaler on feature matrix

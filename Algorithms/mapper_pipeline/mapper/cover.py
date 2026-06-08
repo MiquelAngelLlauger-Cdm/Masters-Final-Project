@@ -1,25 +1,3 @@
-"""
-mapper.cover
-============
-
-Open cover construction over the *range of the lens*, and assignment of each
-patient to the cover sets it belongs to.
-
-Two cover modes, both tunable from ``config.MapperParams``:
-
-* ``"uniform"`` — the standard Mapper parameterisation: ``N_INTERVALS``
-  overlapping intervals of equal width spanning the lens range, with fractional
-  ``OVERLAP`` (a.k.a. "gain"). This generalises the notebook's hand-built
-  26-interval cover.
-
-* ``"edges"``   — explicit, possibly irregular bin edges (the notebook's
-  ``BIN_EDGES`` / ``BIN_LABELS`` style). Useful for clinically meaningful,
-  non-uniform bins (e.g. detox length-of-stay 0-3 / 3-7 / 7-14 / 14+ days).
-
-The cover is what makes the binning tunable; nothing else needs to change to
-re-bin the lens.
-"""
-
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -111,20 +89,6 @@ def build_cover(lens_values: np.ndarray, params) -> Cover:
         memberships = _memberships(lens_values, intervals)
         bin_index = np.array([m[0] if m else -1 for m in memberships], dtype=int)
 
-    elif params.COVER_MODE == "edges":
-        if params.BIN_EDGES is None:
-            raise ValueError("COVER_MODE='edges' requires BIN_EDGES.")
-        intervals = build_edge_cover(params.BIN_EDGES)
-        if params.BIN_LABELS is not None:
-            labels = list(params.BIN_LABELS)
-        else:
-            labels = [f"[{lo:.3g},{hi:.3g})" for lo, hi in intervals]
-        # explicit edges are non-overlapping -> use pandas.cut for the index
-        idx = pd.cut(lens_values, bins=params.BIN_EDGES, labels=False,
-                     right=params.BIN_RIGHT, include_lowest=True)
-        bin_index = np.where(np.isnan(idx), -1, idx).astype(int)
-        memberships = [[b] if b >= 0 else [] for b in bin_index]
-    
     elif params.COVER_MODE == "piecewise":
         if not params.PIECEWISE_SEGMENTS:
             raise ValueError("COVER_MODE='piecewise' requires PIECEWISE_SEGMENTS.")
