@@ -37,6 +37,7 @@ def load_dataset(params) -> Dataset:
     target    = pd.read_csv(params.TARGET_CSV)
     w8        = pd.read_csv(params.W8_CSV)
     w12       = pd.read_csv(params.W12_CSV)
+    w24       = pd.read_csv(params.W24_CSV)
 
     key = params.JOIN_KEY
     df = (
@@ -44,6 +45,7 @@ def load_dataset(params) -> Dataset:
         .merge(target[[key, "retention_tier"]], on=key, how="inner")
         .merge(w8, on=key, how="inner")
         .merge(w12, on=key, how="inner")
+        .merge(w24, on=key, how="inner")
     )
 
     feat_cols = select_features(df, params)

@@ -31,6 +31,7 @@ class MapperParams:
     TARGET_CSV:    str = "../data/clean-data/retention_tier.csv"
     W8_CSV:        str = "../data/clean-data/features_w8.csv"
     W12_CSV:       str = "../data/clean-data/features_w12.csv"
+    W24_CSV:       str = "../data/clean-data/features_w24.csv"
     JOIN_KEY:      str = "PATID"
 
     # ----------------------------------------------------------------- #
