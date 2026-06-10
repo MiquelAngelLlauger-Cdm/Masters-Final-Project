@@ -42,8 +42,8 @@ class MapperParams:
         # "income_welfare_30d", "income_illegal_30d",
         # "n_dependants",
         # 'attendance_density_w8', "had_relapse_by_w8", "engagement_onset_w8",
-        # 'attendance_density_w12', "had_relapse_by_w12", "engagement_onset_w12",
-        # 'attendance_density_w24', "had_relapse_by_w24", "engagement_onset_w24",
+        'attendance_density_w12', "had_relapse_by_w12", "engagement_onset_w12",
+        'attendance_density_w24', "had_relapse_by_w24", "engagement_onset_w24",
     ])
     # Prefixes / suffixes to drop (SOW, DSM composites, merge artifacts).
     EXCLUDE_PREFIXES: List[str] = field(default_factory=lambda: ["sow_", "dsm_"])

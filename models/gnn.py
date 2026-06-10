@@ -52,7 +52,7 @@ def _build_tensors(G: nx.Graph):
     for u, v, ed in G.edges(data=True):
         src += [id_map[u], id_map[v]]
         dst += [id_map[v], id_map[u]]
-        w    = float(ed.get("weight", 1.0))
+        w    = 1.0 - float(ed.get("weight", 1.0))
         weights += [w, w]
 
     edge_index  = torch.tensor([src, dst],  dtype=torch.long)
@@ -114,9 +114,17 @@ class GCN(nn.Module):
 # Training helpers
 # --------------------------------------------------------------------------- #
 
-def _class_weights(data: Data, device: str) -> torch.Tensor:
+def _focal_loss(logits: torch.Tensor, targets: torch.Tensor,
+                gamma: float = 2.0, weight: torch.Tensor | None = None) -> torch.Tensor:
+    ce  = F.cross_entropy(logits, targets, weight=weight, reduction="none")
+    pt  = torch.exp(-ce)
+    return ((1 - pt) ** gamma * ce).mean()
+
+
+def _class_weights(data: Data, device: str, minority_scale: float = 1.0) -> torch.Tensor:
     counts = torch.bincount(data.y[data.train_mask], minlength=NUM_CLASSES).float()
     w = counts.sum() / (NUM_CLASSES * counts.clamp(min=1))
+    w[1] = w[1] * minority_scale
     return w.to(device)
 
 
@@ -144,8 +152,8 @@ def val_loss(model: GCN, data: Data) -> float:
 def evaluate(model: GCN, data: Data, mask: torch.Tensor) -> tuple[float, torch.Tensor]:
     """Return (accuracy, predictions) on the given mask."""
     model.eval()
-    pred = model(data).argmax(dim=1)
-    acc  = (pred[mask] == data.y[mask]).float().mean().item()
+    pred = model(data)[mask].argmax(dim=1)
+    acc  = (pred == data.y[mask]).float().mean().item()
     return acc, pred
 
 
@@ -163,10 +171,10 @@ def classification_summary(model: GCN, data: Data, mask: torch.Tensor) -> None:
 
 def run(G: nx.Graph, epochs: int = 300, lr: float = 0.01,
         hidden: int = 64, dropout: float = 0.5,
-        device: str = "cpu") -> tuple[GCN, Data]:
+        minority_scale: float = 1.0, device: str = "cpu") -> tuple[GCN, Data]:
     """Train and evaluate a GCN on G. Returns (model, data)."""
     data   = build_data(G, device=device)
-    cw     = _class_weights(data, device)
+    cw     = _class_weights(data, device, minority_scale)
     model  = GCN(in_channels=data.x.shape[1], hidden=hidden,
                  out_channels=NUM_CLASSES, dropout=dropout).to(device)
     opt    = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
@@ -174,12 +182,13 @@ def run(G: nx.Graph, epochs: int = 300, lr: float = 0.01,
     n_tr, n_va, n_te = data.train_mask.sum(), data.val_mask.sum(), data.test_mask.sum()
     print(f"GCN  |  nodes={data.num_nodes}  train={n_tr}  val={n_va}  test={n_te}")
 
-    for epoch in range(1, epochs + 1, 10):
+    for epoch in range(1, epochs + 1):
 
         tr_loss    = train_step(model, data, opt, cw)
         vl_loss    = val_loss(model, data)
         val_acc, _ = evaluate(model, data, data.val_mask)
-        print(f"  epoch {epoch:>3d}  train_loss={tr_loss:.4f}  val_loss={vl_loss:.4f}  val_acc={val_acc:.3f}")
+        if epoch % 50 == 0 or epoch == 1:
+            print(f"  epoch {epoch:>3d}  train_loss={tr_loss:.4f}  val_loss={vl_loss:.4f}  val_acc={val_acc:.3f}")
 
     test_acc, _ = evaluate(model, data, data.test_mask)
     print(f"\nTest acc: {test_acc:.3f}\n")
@@ -193,6 +202,7 @@ def run(G: nx.Graph, epochs: int = 300, lr: float = 0.01,
 
 def cross_validate(G: nx.Graph, k: int = 5, epochs: int = 300, lr: float = 0.01,
                    hidden: int = 64, dropout: float = 0.5,
+                   minority_scale: float = 1.0, focal_gamma: float | None = None,
                    device: str = "cpu", random_state: int = 42) -> list[dict]:
     """Stratified k-fold CV (train/test split only). Returns a list of per-fold result dicts."""
     x, y, edge_index, edge_weight, labels = _build_tensors(G)
@@ -211,8 +221,7 @@ def cross_validate(G: nx.Graph, k: int = 5, epochs: int = 300, lr: float = 0.01,
         data.test_mask  = _m(te_idx)
         data = data.to(device)
 
-        cw    = torch.bincount(data.y[data.train_mask], minlength=NUM_CLASSES).float()
-        cw    = (cw.sum() / (NUM_CLASSES * cw.clamp(min=1))).to(device)
+        cw    = _class_weights(data, device, minority_scale)
         model = GCN(in_channels=x.shape[1], hidden=hidden,
                     out_channels=NUM_CLASSES, dropout=dropout).to(device)
         opt   = torch.optim.Adam(model.parameters(), lr=lr, weight_decay=5e-4)
@@ -223,7 +232,10 @@ def cross_validate(G: nx.Graph, k: int = 5, epochs: int = 300, lr: float = 0.01,
             model.train()
             opt.zero_grad()
             out  = model(data)
-            loss = F.cross_entropy(out[data.train_mask], data.y[data.train_mask], weight=cw)
+            if focal_gamma is not None:
+                loss = _focal_loss(out[data.train_mask], data.y[data.train_mask], gamma=focal_gamma, weight=cw)
+            else:
+                loss = F.cross_entropy(out[data.train_mask], data.y[data.train_mask], weight=cw)
             loss.backward()
             opt.step()
             if epoch % 50 == 0 or epoch == 1:
