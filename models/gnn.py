@@ -17,7 +17,7 @@ from torch import nn
 from torch_geometric.nn import GCNConv
 from torch_geometric.data import Data
 from sklearn.model_selection import train_test_split, StratifiedKFold
-from sklearn.metrics import classification_report
+from sklearn.metrics import classification_report, f1_score
 import networkx as nx
 
 
@@ -102,10 +102,10 @@ class GCN(nn.Module):
         self.dropout = dropout
 
     def forward(self, data: Data) -> torch.Tensor:
-        x, ei, ew = data.x, data.edge_index, data.edge_attr
-        x = F.relu(self.conv1(x, ei, ew))
+        x, ei = data.x, data.edge_index
+        x = F.relu(self.conv1(x, ei))
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = F.relu(self.conv2(x, ei, ew))
+        x = F.relu(self.conv2(x, ei))
         x = F.dropout(x, p=self.dropout, training=self.training)
         return self.head(x)
 
@@ -238,20 +238,23 @@ def cross_validate(G: nx.Graph, k: int = 5, epochs: int = 300, lr: float = 0.01,
                 loss = F.cross_entropy(out[data.train_mask], data.y[data.train_mask], weight=cw)
             loss.backward()
             opt.step()
-            if epoch % 50 == 0 or epoch == 1:
+            if epoch % 20 == 0 or epoch == 1:
                 print(f"  epoch {epoch:>3d}  train_loss={loss.item():.4f}")
 
-        test_acc, _ = evaluate(model, data, data.test_mask)
-        print(f"  → test_acc={test_acc:.3f}")
+        test_acc, preds = evaluate(model, data, data.test_mask)
+        true = data.y[data.test_mask].cpu().numpy()
+        test_f1 = f1_score(true, preds.cpu().numpy(), average="macro", zero_division=0)
+        print(f"  → test_acc={test_acc:.3f}  test_f1={test_f1:.3f}")
         classification_summary(model, data, data.test_mask)
-        results.append({"fold": fold, "test_acc": test_acc})
+        results.append({"fold": fold, "test_acc": test_acc, "test_f1": test_f1})
 
     # ── summary table ──
     test_accs = [r["test_acc"] for r in results]
-    print("\n" + "─" * 30)
-    print(f"{'Fold':>6}  {'Test acc':>9}")
+    test_f1s  = [r["test_f1"]  for r in results]
+    print("\n" + "─" * 40)
+    print(f"{'Fold':>6}  {'Test acc':>9}  {'Test F1':>9}")
     for r in results:
-        print(f"  {r['fold']:>4}  {r['test_acc']:>9.3f}")
-    print(f"  Mean  {np.mean(test_accs):>9.3f}")
-    print(f"   Std  {np.std(test_accs):>9.3f}")
+        print(f"  {r['fold']:>4}  {r['test_acc']:>9.3f}  {r['test_f1']:>9.3f}")
+    print(f"  Mean  {np.mean(test_accs):>9.3f}  {np.mean(test_f1s):>9.3f}")
+    print(f"   Std  {np.std(test_accs):>9.3f}  {np.std(test_f1s):>9.3f}")
     return results
