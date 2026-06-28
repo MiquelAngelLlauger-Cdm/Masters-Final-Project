@@ -6,11 +6,7 @@ High-level orchestration. Wires the modules together so a full run is one call.
 
 The lens-dependency ordering is the only subtlety:
 
-* For **feature** and **density** lenses the lens does not depend on the graph,
-  so the order is: distances -> lens -> cover -> graph.
-
-* For the **centrality** lens the lens is computed *from* a proximity graph, so
-  the order is: distances -> proximity graph -> lens -> cover -> Mapper graph.
+the order is: distances -> lens -> cover -> graph.
 
 ``run_pipeline`` handles both transparently.
 """

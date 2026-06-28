@@ -17,8 +17,8 @@ class MapperParams:
     W24_CSV:       str = "../data/clean-data/features_w24.csv"
     JOIN_KEY:      str = "PATID"
 
-    # ----------------------------------------------------------------- #
-    # Feature selection (mirrors notebook Section 1)
+    
+    # Feature selection 
     # ----------------------------------------------------------------- #
     # Columns to drop outright.
     EXCLUDE_COLS: List[str] = field(default_factory=lambda: [
@@ -76,9 +76,7 @@ class MapperParams:
     DENSITY_K: int = 10
     DENSITY_BANDWIDTH: Optional[float] = None  # None -> median-distance default
 
-    # ----------------------------------------------------------------- #
-    # Cover / binning  (kept fully tunable)
-    # ----------------------------------------------------------------- #
+   
     COVER_MODE: str = "uniform"    # "uniform" | "edges"
 
     # uniform cover (standard Mapper resolution/gain)
@@ -97,19 +95,10 @@ class MapperParams:
     # Example: [(0.0, 0.5, 40), (0.5, 1.0, 15)]  -> 40 intervals dense, 15 sparse
 
 
-    # ----------------------------------------------------------------- #
-    # Edge rule for the *displayed* Mapper graph
-    # ----------------------------------------------------------------- #
-    # "cover" : connect proximate patients sharing >=1 cover set (Mapper rule)
-    # "gap"   : connect proximate patients whose cover-bin index differs by
-    #           <= MAX_BIN_GAP (the notebook's tier/bin-gap pruning)
-    # "none"  : pure proximity graph (no lens pruning)
     EDGE_RULE: str = "cover"
     MAX_BIN_GAP: int = 1
 
-    # ----------------------------------------------------------------- #
-    # Layout & rendering
-    # ----------------------------------------------------------------- #
+    
     LAYOUT: str = "spring"         # spring | spectral | pca
     SPRING_K: float = 5.0
     SPRING_ITERS: int = 50
@@ -121,9 +110,7 @@ class MapperParams:
     FIG_WIDTH: int = 900
     FIG_HEIGHT: int = 700
 
-    # ----------------------------------------------------------------- #
-    # Derived helpers
-    # ----------------------------------------------------------------- #
+    
     @property
     def metric_str(self) -> str:
         if self.METRIC == "minkowski":

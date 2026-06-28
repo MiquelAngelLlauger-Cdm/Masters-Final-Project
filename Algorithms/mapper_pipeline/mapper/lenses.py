@@ -2,26 +2,12 @@
 mapper.lenses
 =============
 
-Filter / projection functions ("lenses") for the Mapper pipeline.
+Filter / projection functions ("lenses") for the Metric Graph pipeline.
 
-A lens maps each patient to a real value f(i) -> R. The cover is then built
-over the *range* of the lens (see ``cover.py``), and edges are pruned so that
-two proximate patients are connected only if they share a cover set.
+Two families of lens are provided:
 
-Three families of lens are provided:
-
-1. **Feature lens** (`feature_lens`) — the data-driven projection used in the
-   original notebook (e.g. ``attendance_density_w8``). Just reads a column.
-
-2. **Density lens** (`density_lens`) — projects each node onto a local-density
-   estimate in feature space (kNN distance, ε-ball count, or a Gaussian KDE
-   surrogate). This is a geometry-driven lens: dense cores vs. sparse outliers.
-
-All lenses return a 1-D ``numpy`` array of length ``n_patients`` plus a short
-human-readable name (used in plot titles / axis labels).
-
-The lens value is what gets *binned* by the cover; the binning itself stays
-fully tunable via ``cover.py`` and the parameters object.
+1. **Feature lens** (`feature_lens`) 
+2. **Density lens** (`density_lens`) — Gaussian KDE
 """
 
 from __future__ import annotations
@@ -33,9 +19,6 @@ import numpy as np
 import networkx as nx
 
 
-# --------------------------------------------------------------------------- #
-# Result container
-# --------------------------------------------------------------------------- #
 @dataclass
 class LensResult:
     """Output of a lens: the per-patient values plus metadata for plotting."""
@@ -57,23 +40,11 @@ class LensResult:
                 f"max={v.max():.3f} (n_valid={v.size})")
 
 
-# --------------------------------------------------------------------------- #
-# 1. Feature lens (data-driven) — original notebook behaviour
+
+# 1. Feature lens (data-driven) 
 # --------------------------------------------------------------------------- #
 def feature_lens(df, column: str) -> LensResult:
-    """
-    Project patients onto a raw data column.
-
-    This reproduces the original notebook's filter function, e.g.
-    ``feature_lens(df, "attendance_density_w8")``.
-
-    Parameters
-    ----------
-    df : pandas.DataFrame
-        Patient table (one row per patient, aligned with the distance matrix).
-    column : str
-        Column name to use as the lens.
-    """
+ 
     if column not in df.columns:
         raise KeyError(f"Feature lens column '{column}' not in dataframe.")
     values = df[column].to_numpy(dtype=float)
@@ -81,42 +52,16 @@ def feature_lens(df, column: str) -> LensResult:
 
 
 
-# --------------------------------------------------------------------------- #
 # 3. Density lens (geometry-driven)
 # --------------------------------------------------------------------------- #
 def density_lens(
     D: np.ndarray,
-    method: str = "knn",
+    method: str = "kde",
     k: int = 10,
     epsilon: Optional[float] = None,
     bandwidth: Optional[float] = None,
 ) -> LensResult:
-    """
-    Project patients onto a local-density estimate in feature space.
-
-    Works directly off the precomputed pairwise distance matrix ``D`` so it is
-    consistent with whatever ``METRIC`` was used to build the graph.
-
-    Parameters
-    ----------
-    D : numpy.ndarray
-        Symmetric (n, n) pairwise distance matrix.
-    method : str
-        - ``"kde"``      : Gaussian-kernel density surrogate using ``bandwidth``.
-                           High value = dense region.
-    k : int
-        Number of neighbours for ``knn`` / ``knn_dist``.
-    epsilon : float, optional
-        Radius for ``ball`` method (defaults to the median off-diagonal dist).
-    bandwidth : float, optional
-        Gaussian bandwidth for ``kde`` (defaults to the median off-diagonal
-        distance, a robust Silverman-ish surrogate).
-
-    Notes
-    -----
-    The density lens is computed from distances only; it does not require the
-    raw feature matrix, which keeps it metric-agnostic.
-    """
+    
     n = D.shape[0]
     method = method.lower()
 
@@ -140,29 +85,9 @@ def density_lens(
                       kind="density", detail=detail)
 
 
-# --------------------------------------------------------------------------- #
 # Dispatcher — single entry point used by the pipeline
 # --------------------------------------------------------------------------- #
 def build_lens(params, df, D, G_proximity: Optional[nx.Graph] = None) -> LensResult:
-    """
-    Construct the lens specified by ``params.LENS_KIND``.
-
-    Parameters
-    ----------
-    params : MapperParams
-        Configuration (see ``config.py``). Relevant fields:
-        - LENS_KIND          : "feature" | "centrality" | "density"
-        - FEATURE_LENS_COL   : column name (feature lens)
-        - CENTRALITY_MEASURE : degree/betweenness/... (centrality lens)
-        - DENSITY_METHOD     : knn/knn_dist/ball/kde   (density lens)
-        - DENSITY_K          : k for knn methods
-        - DENSITY_BANDWIDTH  : bandwidth for kde
-    df : pandas.DataFrame
-    D  : numpy.ndarray
-        Pairwise distance matrix.
-    G_proximity : networkx.Graph, optional
-        Required for the centrality lens. Should be the proximity-only graph.
-    """
     kind = params.LENS_KIND.lower()
 
     if kind == "feature":
