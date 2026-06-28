@@ -1,16 +1,9 @@
-"""
-models/gnn.py
-=============
-Two-layer Is it  for binary retention classification on the Mapper graph.
-
-Labels: 0 = did not complete (tiers 1-3), 1 = completed (tier 4).
-Node features: lens_value, bin_idx, primary_set, in_overlap  (4 dims)
-Edge weights : cosine distance stored in the 'weight' attribute.
-"""
-
 from __future__ import annotations
 
+from pathlib import Path
+
 import numpy as np
+import pandas as pd
 import torch
 import torch.nn.functional as F
 from torch import nn
@@ -25,39 +18,88 @@ NUM_CLASSES  = 2
 TIER_NAMES   = ["Not completed (tiers 1-3)", "Completed (tier 4)"]
 
 
-# --------------------------------------------------------------------------- #
-# Graph → PyG Data
-# --------------------------------------------------------------------------- #
+_DATA_DIR = Path(__file__).resolve().parent.parent / "data" / "clean-data"
 
-def _build_tensors(G: nx.Graph):
-    """Return raw graph tensors and label array (no masks)."""
+# Convenience presets to compose feature_cols from (paste into the notebook).
+BASELINE_FEATURES = ["detox_los", "dsm_opioid_score", "sow_total_baseline"]
+W8_FEATURES       = ["had_relapse_by_w8", "engagement_onset_w8"]
+W12_FEATURES      = ["had_relapse_by_w12", "engagement_onset_w12"]
+
+# Default = the w8-graph set (lens is attendance_density_w8, added automatically).
+DEFAULT_FEATURE_COLS = W8_FEATURES + BASELINE_FEATURES
+N_NODE_FEATURES      = 1 + len(DEFAULT_FEATURE_COLS)   # +1 for lens_value
+
+
+def _patient_table() -> pd.DataFrame:
+    frame = None
+    for name in ("pre-trial.csv", "features_w8.csv", "features_w12.csv", "features_w24.csv"):
+        path = _DATA_DIR / name
+        if not path.exists():
+            continue
+        df    = pd.read_csv(path)
+        frame = df if frame is None else frame.merge(df, on="PATID", how="outer")
+    return frame.set_index("PATID")
+
+
+def _build_tensors(G: nx.Graph, feature_cols: list[str] | None = None,
+                   include_lens: bool = True):
+    """Return raw (un-standardised) graph tensors and label array (no masks).
+
+    ``include_lens`` adds the Mapper ``lens_value`` as node-feature 0. Set it
+    False for graphs whose lens carries no class signal (e.g. the KDE-density
+    lens) so the network sees only the joined ``feature_cols`` carriers.
+    """
+    feature_cols = list(DEFAULT_FEATURE_COLS if feature_cols is None else feature_cols)
+    if not include_lens and not feature_cols:
+        raise ValueError("No node features: include_lens=False with empty feature_cols.")
+
     nodes  = sorted(G.nodes(), key=int)
     id_map = {n: i for i, n in enumerate(nodes)}
 
-    feat_rows, labels = [], []
-    for n in nodes:
-        d = G.nodes[n]
-        feat_rows.append([
-            float(d["lens_value"]),
-            float(d["bin_idx"])     / 14.0,
-            float(d["primary_set"]) / 14.0,
-            float(d["in_overlap"]),
-        ])
-        labels.append(0 if int(d["tier"]) < 4 else 1)  # tiers 1-3 → 0, tier 4 → 1
+    patids = [int(G.nodes[n]["patid"]) for n in nodes]
+    labels = [0 if int(G.nodes[n]["tier"]) < 4 else 1 for n in nodes]
 
-    x = torch.tensor(feat_rows, dtype=torch.float)
-    y = torch.tensor(labels,    dtype=torch.long)
+    # join patient features by patid, then median-impute any gaps
+    table   = _patient_table()
+    missing = [c for c in feature_cols if c not in table.columns]
+    if missing:
+        raise KeyError(f"feature_cols not found in patient CSVs: {missing}")
+    feats = table.reindex(patids)[feature_cols]
+    feats = feats.fillna(feats.median(numeric_only=True))
+
+    cols = []
+    if include_lens:
+        cols.append(np.array([float(G.nodes[n]["lens_value"])
+                              for n in nodes]).reshape(-1, 1))
+    cols.append(feats.to_numpy(dtype=float))
+
+    x = torch.tensor(np.hstack(cols), dtype=torch.float)
+    y = torch.tensor(labels, dtype=torch.long)
 
     src, dst, weights = [], [], []
     for u, v, ed in G.edges(data=True):
         src += [id_map[u], id_map[v]]
         dst += [id_map[v], id_map[u]]
-        w    = 1.0 - float(ed.get("weight", 1.0))
+        dist = float(ed.get("weight", 0.0))   # edge "weight" stores the distance
+        w    = 1.0 / (1.0 + dist)             # bounded inverse distance ∈ (0, 1]
         weights += [w, w]
 
     edge_index  = torch.tensor([src, dst],  dtype=torch.long)
     edge_weight = torch.tensor(weights,     dtype=torch.float)
     return x, y, edge_index, edge_weight, np.array(labels)
+
+
+def _set_seed(seed: int) -> None:
+    """Seed NumPy and PyTorch so weight init / dropout are reproducible."""
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+
+
+def _standardize(x: torch.Tensor, train_mask: torch.Tensor) -> torch.Tensor:
+    """Z-score features using train-split statistics only (no leakage)."""
+    mu = x[train_mask].mean(dim=0, keepdim=True)
+    sd = x[train_mask].std(dim=0, unbiased=False, keepdim=True).clamp(min=1e-6)
+    return (x - mu) / sd
 
 
 def _make_masks(labels, tr_idx, va_idx, te_idx):
@@ -69,20 +111,21 @@ def _make_masks(labels, tr_idx, va_idx, te_idx):
     return _m(tr_idx), _m(va_idx), _m(te_idx)
 
 
-def build_data(G: nx.Graph, device: str = "cpu") -> Data:
-    """Convert a NetworkX Mapper graph to a PyG Data object.
-
-    Splits nodes into train / val / test (64 / 16 / 20 %) stratified by label.
-    """
-    x, y, edge_index, edge_weight, labels = _build_tensors(G)
+def build_data(G: nx.Graph, device: str = "cpu",
+               feature_cols: list[str] | None = None,
+               include_lens: bool = True) -> Data:
+    x, y, edge_index, edge_weight, labels = _build_tensors(G, feature_cols, include_lens)
 
     idx = np.arange(len(labels))
     tr_idx, te_idx = train_test_split(idx, test_size=0.20, stratify=labels, random_state=42)
     tr_idx, va_idx = train_test_split(tr_idx, test_size=0.20,
                                       stratify=labels[tr_idx], random_state=42)
 
+    tr_mask, va_mask, te_mask = _make_masks(labels, tr_idx, va_idx, te_idx)
+    x = _standardize(x, tr_mask)
+
     data = Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_weight)
-    data.train_mask, data.val_mask, data.test_mask = _make_masks(labels, tr_idx, va_idx, te_idx)
+    data.train_mask, data.val_mask, data.test_mask = tr_mask, va_mask, te_mask
     return data.to(device)
 
 
@@ -93,7 +136,7 @@ def build_data(G: nx.Graph, device: str = "cpu") -> Data:
 class GCN(nn.Module):
     """Two-layer GCN with a linear classification head."""
 
-    def __init__(self, in_channels: int = 4, hidden: int = 64,
+    def __init__(self, in_channels: int = N_NODE_FEATURES, hidden: int = 64,
                  out_channels: int = NUM_CLASSES, dropout: float = 0.5):
         super().__init__()
         self.conv1   = GCNConv(in_channels, hidden)
@@ -103,9 +146,10 @@ class GCN(nn.Module):
 
     def forward(self, data: Data) -> torch.Tensor:
         x, ei = data.x, data.edge_index
-        x = F.relu(self.conv1(x, ei))
+        ew    = getattr(data, "edge_attr", None)   # bounded inverse distance
+        x = F.relu(self.conv1(x, ei, edge_weight=ew))
         x = F.dropout(x, p=self.dropout, training=self.training)
-        x = F.relu(self.conv2(x, ei))
+        x = F.relu(self.conv2(x, ei, edge_weight=ew))
         x = F.dropout(x, p=self.dropout, training=self.training)
         return self.head(x)
 
@@ -171,9 +215,13 @@ def classification_summary(model: GCN, data: Data, mask: torch.Tensor) -> None:
 
 def run(G: nx.Graph, epochs: int = 300, lr: float = 0.01,
         hidden: int = 64, dropout: float = 0.5,
-        minority_scale: float = 1.0, device: str = "cpu") -> tuple[GCN, Data]:
+        minority_scale: float = 1.0, device: str = "cpu",
+        feature_cols: list[str] | None = None,
+        include_lens: bool = True, seed: int = 42) -> tuple[GCN, Data]:
     """Train and evaluate a GCN on G. Returns (model, data)."""
-    data   = build_data(G, device=device)
+    _set_seed(seed)
+    data   = build_data(G, device=device, feature_cols=feature_cols,
+                        include_lens=include_lens)
     cw     = _class_weights(data, device, minority_scale)
     model  = GCN(in_channels=data.x.shape[1], hidden=hidden,
                  out_channels=NUM_CLASSES, dropout=dropout).to(device)
@@ -203,9 +251,12 @@ def run(G: nx.Graph, epochs: int = 300, lr: float = 0.01,
 def cross_validate(G: nx.Graph, k: int = 5, epochs: int = 300, lr: float = 0.01,
                    hidden: int = 64, dropout: float = 0.5,
                    minority_scale: float = 1.0, focal_gamma: float | None = None,
-                   device: str = "cpu", random_state: int = 42) -> list[dict]:
+                   device: str = "cpu", random_state: int = 42,
+                   feature_cols: list[str] | None = None,
+                   include_lens: bool = True) -> list[dict]:
     """Stratified k-fold CV (train/test split only). Returns a list of per-fold result dicts."""
-    x, y, edge_index, edge_weight, labels = _build_tensors(G)
+    _set_seed(random_state)
+    x, y, edge_index, edge_weight, labels = _build_tensors(G, feature_cols, include_lens)
 
     skf     = StratifiedKFold(n_splits=k, shuffle=True, random_state=random_state)
     idx     = np.arange(len(labels))
@@ -216,9 +267,11 @@ def cross_validate(G: nx.Graph, k: int = 5, epochs: int = 300, lr: float = 0.01,
         def _m(i):
             m = torch.zeros(n, dtype=torch.bool); m[i] = True; return m
 
-        data = Data(x=x, y=y, edge_index=edge_index, edge_attr=edge_weight)
-        data.train_mask = _m(tr_idx)
-        data.test_mask  = _m(te_idx)
+        tr_mask, te_mask = _m(tr_idx), _m(te_idx)
+        data = Data(x=_standardize(x, tr_mask), y=y,
+                    edge_index=edge_index, edge_attr=edge_weight)
+        data.train_mask = tr_mask
+        data.test_mask  = te_mask
         data = data.to(device)
 
         cw    = _class_weights(data, device, minority_scale)

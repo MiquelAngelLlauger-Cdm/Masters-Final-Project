@@ -1,13 +1,3 @@
-"""
-mapper.viz
-==========
-
-Interactive Bokeh visualisation. Mirrors Section 6 of the notebook, preserving
-the node/edge styling, hover tooltips and tier legend. Adds the option to
-colour nodes by the lens value (``params.COLOR_BY = "lens"``) in addition to the
-original tier colouring (``"tier"``).
-"""
-
 from __future__ import annotations
 
 import numpy as np
@@ -16,7 +6,7 @@ import networkx as nx
 from bokeh.plotting import figure, show
 from bokeh.models import (
     ColumnDataSource, HoverTool, Legend, LegendItem,
-    LinearColorMapper, ColorBar,
+    LinearColorMapper, ColorBar, PointDrawTool, CustomJS
 )
 from bokeh.palettes import Viridis256
 
@@ -47,6 +37,7 @@ def build_sources(G: nx.Graph, df, lens=None, params=None):
                 for n in nodes]
 
     node_source = ColumnDataSource(dict(
+        index      = list(range(len(nodes))),    
         x          = [G.nodes[n]["x"] for n in nodes],
         y          = [G.nodes[n]["y"] for n in nodes],
         tier       = [str(t) for t in node_tier],
@@ -63,20 +54,26 @@ def build_sources(G: nx.Graph, df, lens=None, params=None):
         node_source.data["color"] = node_color
 
     # ---- edges ----------------------------------------------------------- #
+    node_to_idx = {n: i for i, n in enumerate(nodes)}
     edge_xs, edge_ys, edge_w, edge_shared = [], [], [], []
+    edge_u_idx, edge_v_idx = [], []
     for u, v, data in G.edges(data=True):
         edge_xs.append([G.nodes[u]["x"], G.nodes[v]["x"]])
         edge_ys.append([G.nodes[u]["y"], G.nodes[v]["y"]])
         edge_w.append(data.get("weight", 0.0))
         # # shared cover sets beyond 1 (used for emphasis, like the notebook)
         edge_shared.append(len(data.get("shared_sets", [1])) - 1)
+        edge_u_idx.append(node_to_idx[u])     # <-- new
+        edge_v_idx.append(node_to_idx[v])     # <-- new
+
 
     edge_alpha = [0.5 if g == 0 else 0.5 for g in edge_shared]
     edge_color = ["#aaaaaa" if g == 0 else "#aaaaaa" for g in edge_shared]
 
     edge_source = ColumnDataSource(dict(
         xs=edge_xs, ys=edge_ys, weight=edge_w,
-        shared=edge_shared, alpha=edge_alpha, color=edge_color,
+        shared=edge_shared, alpha=edge_alpha, color=edge_color, u_idx=edge_u_idx, v_idx=edge_v_idx,    # <-- new
+
     ))
 
     return node_source, edge_source, mapper
@@ -136,6 +133,34 @@ def make_figure(G, node_source, edge_source, mapper, lens, params):
         ("Detox LOS", "@detox_los{0.0} days"),
         ("Attendance (w8)", "@attendance_w8{0.000}"),
     ]))
+
+    # --- enable node dragging -------------------------------------------------- #
+    # Callback: when node_source positions change, recompute edge endpoints
+    follow_edges = CustomJS(
+        args=dict(node_src=node_source, edge_src=edge_source),
+        code="""
+        const nx = node_src.data['x'];
+        const ny = node_src.data['y'];
+        const u  = edge_src.data['u_idx'];
+        const v  = edge_src.data['v_idx'];
+        const xs = edge_src.data['xs'];
+        const ys = edge_src.data['ys'];
+        for (let i = 0; i < xs.length; i++) {
+            xs[i] = [nx[u[i]], nx[v[i]]];
+            ys[i] = [ny[u[i]], ny[v[i]]];
+        }
+        edge_src.change.emit();
+        """
+    )
+    node_source.js_on_change('data', follow_edges)
+
+    draw_tool = PointDrawTool(
+        renderers=[nodes_r],
+        add=False,           # disable click-to-add new nodes
+        drag=True,           # enable dragging
+    )
+    p.add_tools(draw_tool)
+    p.toolbar.active_tap = draw_tool   # makes drag active by default
 
     return p
 
