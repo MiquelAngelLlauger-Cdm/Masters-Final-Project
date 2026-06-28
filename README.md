@@ -10,19 +10,20 @@ This repository contains all the code used for the thesis as well as the dataset
 - **Institution**: University of Barcelona
 - **Advisor**: Prof. Dr.Kostyiantin Drach
 
-
-### Abstract 
-
-The Mapper algorithm of Topological Data Analysis (TDA) captures the shape of a point cloud as a graph, but in doing so it collapses many data points into each node. This thesis introduces the Metric Graph, a variant of Mapper in which every point is retained as a vertex and a projection cover is used only to constrain the edges of an underlying ε-neighbourhood graph in a given metric space. Because each vertex now corresponds to a single subject, we enable node-level prediction via Graph Neural Networks (GNNs).
-We apply the method to the National Institute on Drug Abuse (NIDA) CTN- 0051 Extended-Release Naltrexone vs. Buprenorphine-Naloxone (X:BOT) study for
-Opioid Use Disorder (OUD), focusing on patient retention. We build Metric Graphs at trial weeks 8 and 12 using baseline and engagement features and train Graph Convolutional Networks (GCNs) to predict dropout, benchmarking against non-graph classifiers. We report the experimental results, discuss the parameter choice and assess whether GNNs outperform classical models when they operate on the Metric Graph.
-
 ### Contact
 
 Feel free to contact me to discuss any issues, questions or comments. 
 
 - Email: [mallaugers@gmail.com](mailto:mallaugers@gmail.com)
 - Github: [MiquelAngelLlauger-Cdm](https://github.com/MiquelAngelLlauger-Cdm)
+
+
+
+### Abstract 
+
+The Mapper algorithm of Topological Data Analysis (TDA) captures the shape of a point cloud as a graph, but in doing so it collapses many data points into each node. This thesis introduces the Metric Graph, a variant of Mapper in which every point is retained as a vertex and a projection cover is used only to constrain the edges of an underlying ε-neighbourhood graph in a given metric space. Because each vertex now corresponds to a single subject, we enable node-level prediction via Graph Neural Networks (GNNs).
+We apply the method to the National Institute on Drug Abuse (NIDA) CTN- 0051 Extended-Release Naltrexone vs. Buprenorphine-Naloxone (X:BOT) study for
+Opioid Use Disorder (OUD), focusing on patient retention. We build Metric Graphs at trial weeks 8 and 12 using baseline and engagement features and train Graph Convolutional Networks (GCNs) to predict dropout, benchmarking against non-graph classifiers. We report the experimental results, discuss the parameter choice and assess whether GNNs outperform classical models when they operate on the Metric Graph.
 
 
 ### Data
